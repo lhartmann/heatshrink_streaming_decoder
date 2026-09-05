@@ -26,28 +26,100 @@
 #include <stdint.h>
 #include <optional>
 #include <functional>
+#include <cstring>
 
-template <unsigned Wbits=9, unsigned Lbits=5>
-struct heatshrink_streaming_decoder {
+namespace heatshrink_streaming {
+
+struct HS_ROM_Reader {
+    const uint8_t *source;
+    size_t source_size;
+
+    const uint8_t *p;
+
+    void reset() {
+        p = source;
+    }
+
+    HS_ROM_Reader(const uint8_t *p, size_t len) {
+        source = p;
+        source_size = len;
+
+        reset();
+    }
+
+    std::optional<uint8_t> operator()() {
+        if (p - source == source_size)
+            return std::nullopt;
+
+        return *p++;
+    }
+};
+
+struct HS_ifstream_Reader {
+    std::ifstream &in;
+
+    void reset() {
+        in.seekg(0);
+    }
+
+    HS_ifstream_Reader(std::ifstream &in_) : in(in_) {
+        reset();
+    }
+
+    std::optional<uint8_t> operator()() {
+        char ch;
+        if (!in.get(ch))
+            return std::nullopt;
+
+        return ch;
+    }
+};
+
+template <class Reader, unsigned Wbits, unsigned Lbits>
+struct HS_Decoder {
     static constexpr uint32_t Wmask = (1U << Wbits) - 1U;
     static constexpr uint32_t Lmask = (1U << Lbits) - 1U;
 
     // User supplied
-    std::function<std::optional<uint8_t>()> getbyte;
+    Reader reader;
 
     // Internal states. Initial = expecting 1 bit for tag.
-    uint8_t input_buffer{0};
-    uint8_t input_mask{0};
-    uint8_t pending_bits{1};
-    uint8_t backref_bytes{0};
-    bool    expecting_tag{true};
-    bool    expecting_literal{false};
+    uint8_t input_buffer;
+    uint8_t input_mask;
+    uint8_t pending_bits;
+    uint8_t backref_bytes;
+    bool    expecting_tag;
+    bool    expecting_literal;
 
-    uint16_t bits{0};
-    uint16_t backref_offset{0};
-    uint16_t buffer_head{0};
+    uint16_t bits;
+    uint16_t backref_offset;
+    uint16_t buffer_head;
 
-    uint8_t  buffer[1 << Wbits] = {0};
+    uint8_t  buffer[1 << Wbits];
+
+    HS_Decoder(Reader r) : reader(r) {
+        reset();
+    }
+
+    void reset() {
+        input_buffer = 0;
+        input_mask = 0;
+        pending_bits = 1;
+        backref_bytes = 0;
+        expecting_tag = true;
+        expecting_literal = false;
+
+        bits = 0;
+        backref_offset = 0;
+        buffer_head = 0;
+
+        memset(buffer, 0, sizeof(buffer));
+
+        // If getter has a reset method, call it
+        if constexpr (requires { reader.reset(); }) {
+            reader.reset();
+        }
+    }
 
     void buffer_push(uint8_t b) {
         buffer[buffer_head++] = b;
@@ -56,7 +128,7 @@ struct heatshrink_streaming_decoder {
 
     std::optional<bool> getbit() {
         if (!input_mask) {
-            auto byte = getbyte();
+            auto byte = reader();
             if (!byte) return std::nullopt;
 
             input_buffer = *byte;
@@ -68,7 +140,7 @@ struct heatshrink_streaming_decoder {
         return bit;
     }
 
-    std::optional<uint8_t> pop() {
+    std::optional<uint8_t> get() {
         if (backref_bytes) {
             uint8_t b = buffer[(buffer_head - backref_offset) & Wmask];
             if (--backref_bytes == 0) {
@@ -115,19 +187,34 @@ struct heatshrink_streaming_decoder {
             backref_bytes = (bits & Lmask) + 1;
         }
 
-        return pop(); // Tailcall, takes no stack.
+        return get(); // Tailcall, takes no stack.
     }
 
-    const uint8_t *pop_sector() {
+    const uint8_t *get_sector() {
         if (!buffer_head)
-            if (!pop())
+            if (!get())
                 return 0;
 
         while (buffer_head)
-            if (!pop())
+            if (!get())
                 return 0;
 
         return buffer;
     }
+
+    const uint8_t *data() {
+        return buffer;
+    }
+    size_t size() {
+        if (buffer_head == 0)
+            return Wmask + 1;
+        return buffer_head;
+    }
 };
 
+template <unsigned W, unsigned L, class Reader>
+static auto makeDecoder(Reader reader) {
+    return HS_Decoder<Reader,W,L>(reader);
+}
+
+} // namespace heatshrink_streaming_decoder
