@@ -55,14 +55,15 @@ struct HS_ROM_Reader {
     }
 };
 
-struct HS_ifstream_Reader {
-    std::ifstream &in;
+template <class InputStream>
+struct HS_Stream_Reader {
+    InputStream &in;
 
     void reset() {
         in.seekg(0);
     }
 
-    HS_ifstream_Reader(std::ifstream &in_) : in(in_) {
+    HS_Stream_Reader(InputStream &in_) : in(in_) {
         reset();
     }
 
